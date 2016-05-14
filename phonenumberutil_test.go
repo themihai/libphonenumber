@@ -205,6 +205,16 @@ func Test_IsValidNumber(t *testing.T) {
 			err:     nil,
 			isValid: true,
 			region:  "US",
+		}, {
+			input:   "+343511234567",
+			err:     nil,
+			isValid: false,
+			region:  "ES",
+		}, {
+			input:   "+12424654321",
+			err:     nil,
+			isValid: true,
+			region:  "BS",
 		},
 	}
 
@@ -311,14 +321,14 @@ func TestFormat(t *testing.T) {
 		frmt   PhoneNumberFormat
 	}{
 		{
-			in:     "01932 869755",
+			in:     "019 3286 9755",
 			region: "GB",
-			exp:    "019 3286 9755",
+			exp:    "01932 869755",
 			frmt:   NATIONAL,
 		}, {
 			in:     "+44 (0) 1932 869755",
 			region: "GB",
-			exp:    "+44 19 3286 9755",
+			exp:    "+44 1932 869755",
 			frmt:   INTERNATIONAL,
 		}, {
 			in:     "4431234567",
@@ -503,7 +513,7 @@ func Test_getMetadata(t *testing.T) {
 			cc:         49,
 			i18nPref:   "00",
 			natPref:    "0",
-			numFmtSize: 15,
+			numFmtSize: 16,
 		}, {
 			name:       "AR",
 			id:         "AR",
@@ -609,11 +619,11 @@ func TestGetNationalSignificantNumber(t *testing.T) {
 }
 
 func Test_GetExampleNumberForType(t *testing.T) {
-	if reflect.DeepEqual(getTestNumber("DE_NUMBER"), GetExampleNumber("DE")) {
+	if !reflect.DeepEqual(getTestNumber("DE_NUMBER"), GetExampleNumber("DE")) {
 		t.Error("the example number for Germany should have been the " +
 			"same as the test number we're using")
 	}
-	if reflect.DeepEqual(
+	if !reflect.DeepEqual(
 		getTestNumber("DE_NUMBER"), GetExampleNumberForType("DE", FIXED_LINE)) {
 		t.Error("the example number for Germany should have been the " +
 			"same as the test number we're using [FIXED_LINE]")
@@ -664,4 +674,87 @@ func Test_normalizeDiallableCharsOnly(t *testing.T) {
 	if "03*456+234" != normalizeDiallableCharsOnly("03*4-56&+a#234") {
 		t.Error("did not correctly remove non-diallable characters")
 	}
+}
+
+type testCase struct {
+	num          string
+	region       string
+	expectedE164 string
+	valid        bool
+}
+
+func runTestBatch(t *testing.T, tests []testCase) {
+	for _, test := range tests {
+		n, err := Parse(test.num, test.region)
+		if err != nil {
+			t.Errorf("Failed to parse number %s: %s", err)
+		}
+
+		if IsValidNumberForRegion(n, test.region) != test.valid {
+			t.Errorf("Number %s: validity mismatch: expected %t got %t.", test.num, test.valid, !test.valid)
+		}
+
+		s := Format(n, E164)
+		if s != test.expectedE164 {
+			t.Errorf("Expected '%s', got '%s'", test.expectedE164, s)
+		}
+	}
+}
+
+func TestItalianLeadingZeroes(t *testing.T) {
+
+	tests := []testCase{
+		{
+			num:          "0491 570 156",
+			region:       "AU",
+			expectedE164: "+61491570156",
+			valid:        true,
+		},
+		{
+			num:          "02 5550 1234",
+			region:       "AU",
+			expectedE164: "+61255501234",
+			valid:        true,
+		},
+		{
+			num:          "+39.0399123456",
+			region:       "IT",
+			expectedE164: "+390399123456",
+			valid:        true,
+		},
+	}
+
+	runTestBatch(t, tests)
+}
+
+func TestARNumberTransformRule(t *testing.T) {
+	tests := []testCase{
+		{
+			num:          "+541151123456",
+			region:       "AR",
+			expectedE164: "+541151123456",
+			valid:        true,
+		},
+		{
+			num:          "+540111561234567",
+			region:       "AR",
+			expectedE164: "+5491161234567",
+			valid:        true,
+		},
+	}
+
+	runTestBatch(t, tests)
+}
+
+func TestLeadingOne(t *testing.T) {
+	tests := []testCase{
+		{
+			num:          "15167706076",
+			region:       "US",
+			expectedE164: "+15167706076",
+			valid:        true,
+		},
+	}
+
+	runTestBatch(t, tests)
 }

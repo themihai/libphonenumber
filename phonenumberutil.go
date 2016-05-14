@@ -1733,11 +1733,11 @@ func chooseFormattingPatternForNumber(
 		leadingDigitsPattern := numFormat.GetLeadingDigitsPattern()
 		size := len(leadingDigitsPattern)
 
+		patP := `^(?:` + numFormat.GetPattern() + `)$` // Strictly match
 		m, ok := regexCache[numFormat.GetPattern()]
 		if !ok {
-			pat := numFormat.GetPattern()
-			m = regexp.MustCompile(pat)
-			regexCache[pat] = m
+			m = regexp.MustCompile(patP)
+			regexCache[patP] = m
 		}
 
 		if size == 0 {
@@ -1759,7 +1759,7 @@ func chooseFormattingPatternForNumber(
 		}
 
 		inds := reg.FindStringIndex(nationalNumber)
-		if len(inds) > 0 && m.MatchString(nationalNumber) {
+		if len(inds) > 0 && inds[0] == 0 && m.MatchString(nationalNumber) { // inds[0] == 0 ensures strict match of leading digits
 			return numFormat
 		}
 	}
@@ -2044,19 +2044,19 @@ func getMetadataForNonGeographicalRegion(countryCallingCode int) *PhoneMetadata 
 func isNumberPossibleForDesc(
 	nationalNumber string, numberDesc *PhoneNumberDesc) bool {
 
-	pat, ok := regexCache[numberDesc.GetPossibleNumberPattern()]
+	possiblePattern := "^(?:" + numberDesc.GetPossibleNumberPattern() + ")$" // Strictly match
+	pat, ok := regexCache[possiblePattern]
 	if !ok {
-		patP := numberDesc.GetPossibleNumberPattern()
-		pat = regexp.MustCompile(patP)
-		regexCache[patP] = pat
+		pat = regexp.MustCompile(possiblePattern)
+		regexCache[possiblePattern] = pat
 	}
 	return pat.MatchString(nationalNumber)
 }
 
 func isNumberMatchingDesc(nationalNumber string, numberDesc *PhoneNumberDesc) bool {
-	pat, ok := regexCache[numberDesc.GetNationalNumberPattern()]
+	patP := "^(?:" + numberDesc.GetNationalNumberPattern() + ")$" // Strictly match
+	pat, ok := regexCache[patP]
 	if !ok {
-		patP := numberDesc.GetNationalNumberPattern()
 		pat = regexp.MustCompile(patP)
 		regexCache[patP] = pat
 	}
@@ -2135,9 +2135,9 @@ func getRegionCodeForNumberFromRegionList(
 		// region codes come from the country calling code map.
 		var metadata *PhoneMetadata = getMetadataForRegion(regionCode)
 		if len(metadata.GetLeadingDigits()) > 0 {
-			pat, ok := regexCache[metadata.GetLeadingDigits()]
+			patP := "^(?:" + metadata.GetLeadingDigits() + ")" // Non capturing grouping to support OR'ed alternatives (e.g. 555|1[78]|2)
+			pat, ok := regexCache[patP]
 			if !ok {
-				patP := metadata.GetLeadingDigits()
 				pat = regexp.MustCompile(patP)
 				regexCache[patP] = pat
 			}
@@ -2271,15 +2271,15 @@ func testNumberLengthAgainstPattern(
 	numberPattern *regexp.Regexp,
 	number string) ValidationResult {
 
-	if numberPattern.MatchString(number) {
-		return IS_POSSIBLE
+	inds := numberPattern.FindStringIndex(number)
+	if len(inds) > 0 && inds[0] == 0 && inds[1] == len(number) {
+		if inds[1] == len(number) { // Exact match
+			return IS_POSSIBLE
+		}
+		return TOO_LONG // Matches input start but not end
 	}
 
-	inds := numberPattern.FindStringIndex(number)
-	if len(inds) > 0 {
-		return TOO_LONG
-	}
-	return TOO_SHORT
+	return TOO_SHORT // Does not match input start
 }
 
 // Helper method to check whether a number is too short to be a regular
@@ -2497,12 +2497,12 @@ func maybeExtractCountryCode(
 				potentialNationalNumber = builder.NewBuilderString(
 					normalizedNumber[len(defaultCountryCodeString):])
 				generalDesc            = defaultRegionMetadata.GetGeneralDesc()
-				validNumberPattern, ok = regexCache[generalDesc.GetNationalNumberPattern()]
+				patP                   = `^(?:` + generalDesc.GetNationalNumberPattern() + `)$` // Strictly match
+				validNumberPattern, ok = regexCache[patP]
 			)
 			if !ok {
-				pat := generalDesc.GetNationalNumberPattern()
-				validNumberPattern = regexp.MustCompile(pat)
-				regexCache[pat] = validNumberPattern
+				validNumberPattern = regexp.MustCompile(patP)
+				regexCache[patP] = validNumberPattern
 			}
 			maybeStripNationalPrefixAndCarrierCode(
 				potentialNationalNumber,
@@ -2542,7 +2542,7 @@ func maybeExtractCountryCode(
 func parsePrefixAsIdd(iddPattern *regexp.Regexp, number *builder.Builder) bool {
 	numStr := number.String()
 	ind := iddPattern.FindStringIndex(numStr)
-	if len(ind) == 0 {
+	if len(ind) == 0 || ind[0] != 0 {
 		return false
 	}
 	matchEnd := ind[1] // ind is a two element slice
@@ -2550,7 +2550,7 @@ func parsePrefixAsIdd(iddPattern *regexp.Regexp, number *builder.Builder) bool {
 	// a 0, since country calling codes cannot begin with 0.
 	find := CAPTURING_DIGIT_PATTERN.FindAllString(numStr[matchEnd:], -1)
 	if len(find) > 0 {
-		if NormalizeDigitsOnly(find[1]) == "0" {
+		if NormalizeDigitsOnly(find[0]) == "0" {
 			return false
 		}
 	}
@@ -2572,10 +2572,9 @@ func maybeStripInternationalPrefixAndNormalize(
 		return PhoneNumber_FROM_DEFAULT_COUNTRY
 	}
 	// Check to see if the number begins with one or more plus signs.
-	ind := PLUS_CHARS_PATTERN.FindAllIndex(numBytes, -1)
-	if len(ind) > 0 {
-		last := ind[len(ind)-1][1]
-		number.ResetWith(numBytes[last:])
+	ind := PLUS_CHARS_PATTERN.FindIndex(numBytes) // Return is an int pair [start,end]
+	if len(ind) > 0 && ind[0] == 0 {              // Strictly match from string start
+		number.ResetWith(numBytes[ind[1]:])
 		// Can now normalize the rest of the number since we've consumed
 		// the "+" sign at the start.
 		number.ResetWithString(normalize(number.String()))
@@ -2609,6 +2608,7 @@ func maybeStripNationalPrefixAndCarrierCode(
 		// Early return for numbers of zero length.
 		return false
 	}
+	possibleNationalPrefix = "^(?:" + possibleNationalPrefix + ")" // Strictly match from string start
 	// Attempt to parse the first digits as a national prefix.
 	prefixMatcher, ok := regexCache[possibleNationalPrefix]
 	if !ok {
@@ -2616,14 +2616,13 @@ func maybeStripNationalPrefixAndCarrierCode(
 		prefixMatcher = regexp.MustCompile(pat)
 		regexCache[pat] = prefixMatcher
 	}
-	if prefixMatcher.Match(number.Bytes()) {
-		//if (prefixMatcher.lookingAt()) {
+	if prefixMatcher.MatchString(number.String()) {
+		natRulePattern := "^(?:" + metadata.GetGeneralDesc().GetNationalNumberPattern() + ")$" // Strictly match
 		nationalNumberRule, ok :=
-			regexCache[metadata.GetGeneralDesc().GetNationalNumberPattern()]
+			regexCache[natRulePattern]
 		if !ok {
-			pat := metadata.GetGeneralDesc().GetNationalNumberPattern()
-			nationalNumberRule = regexp.MustCompile(pat)
-			regexCache[pat] = nationalNumberRule
+			nationalNumberRule = regexp.MustCompile(natRulePattern)
+			regexCache[natRulePattern] = nationalNumberRule
 		}
 		// Check if the original number is viable.
 		isViableOriginalNumber := nationalNumberRule.Match(number.Bytes())
@@ -2631,42 +2630,40 @@ func maybeStripNationalPrefixAndCarrierCode(
 		// captured by the capturing groups in possibleNationalPrefix;
 		// therefore, no transformation is necessary, and we just
 		// remove the national prefix.
-		groups := prefixMatcher.FindAllIndex(number.Bytes(), -1)
-		numOfGroups := len(groups)
+		groups := prefixMatcher.FindSubmatchIndex(number.Bytes())
+		numOfGroups := len(groups)/2 - 1 // groups is a list of index pairs, idx0,idx1 defines the whole match, idx2+ submatches.
+		// Substract one to ignore group(0) in count
 		transformRule := metadata.GetNationalPrefixTransformRule()
-		if len(transformRule) == 0 || len(groups[numOfGroups-1]) == 0 {
+		if len(transformRule) == 0 || groups[numOfGroups*2] < 0 { // Negative idx means subgroup did not match
 			// If the original number was viable, and the resultant number
 			// is not, we return.
 			if isViableOriginalNumber &&
 				!nationalNumberRule.MatchString(
-					number.String()[groups[len(groups)-1][1]:]) {
+					number.String()[groups[1]:]) { // groups[1] == last match idx
 				return false
 			}
 			if len(carrierCode.Bytes()) != 0 &&
 				numOfGroups > 0 &&
-				len(groups[numOfGroups-1]) != 0 {
-				carrierCode.Write(number.Bytes()[groups[0][0]:groups[0][1]])
+				groups[numOfGroups*2] > 0 { // Negative idx means subgroup did not match
+				carrierCode.Write(number.Bytes()[groups[numOfGroups*2]:groups[numOfGroups*2+1]])
 			}
-			number.ResetWith(number.Bytes()[groups[0][1]:])
+			number.ResetWith(number.Bytes()[groups[1]:])
 			return true
 		} else {
 			// Check that the resultant number is still viable. If not,
 			// return. Check this by copying the string buffer and
 			// making the transformation on the copy first.
-			transformedNumber := builder.NewBuilder(number.Bytes())
-			transformedNumBytes := number.Bytes()
-			copy(transformedNumBytes[0:numberLength],
-				prefixMatcher.ReplaceAllString(number.String(), transformRule))
-			// v-- so confused...?
-			//transformedNumber.replace(0, numberLength, prefixMatcher.replaceFirst(transformRule));
+			numString := number.String()
+			transformedNumBytes := []byte(prefixMatcher.ReplaceAllString(numString, transformRule))
 			if isViableOriginalNumber &&
 				!nationalNumberRule.Match(transformedNumBytes) {
 				return false
 			}
-			if len(carrierCode.Bytes()) != 0 && numOfGroups > 1 {
-				carrierCode.WriteString(prefixMatcher.FindString(number.String()))
+			if len(carrierCode.Bytes()) != 0 && numOfGroups > 1 && groups[2] != -1 { // Check group(1) got a submatch
+				carrC := numString[groups[2]:groups[3]] // group(1) idxs
+				carrierCode.WriteString(carrC)
 			}
-			number.ResetWith(transformedNumber.Bytes())
+			number.ResetWith(transformedNumBytes)
 			return true
 		}
 	}
@@ -2911,7 +2908,7 @@ func parseHelper(
 	if lengthOfNationalNumber > MAX_LENGTH_FOR_NSN {
 		return ErrNumTooLong
 	}
-	if !isLeadingZeroPossible(int(phoneNumber.GetCountryCode())) {
+	if isLeadingZeroPossible(int(phoneNumber.GetCountryCode())) {
 		setItalianLeadingZerosForPhoneNumber(
 			normalizedNationalNumber.String(), phoneNumber)
 	}
